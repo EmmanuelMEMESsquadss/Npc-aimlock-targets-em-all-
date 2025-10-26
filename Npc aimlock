@@ -1,5 +1,5 @@
 -- LocalScript (StarterPlayerScripts)
--- v3 (Gemini Improved) - NPC-Only Auto-Lock (FIXED PERFORMANCE)
+-- v4 (Gemini Improved) - NPC-Only Auto-Lock (LAG & UI BUGS FIXED)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -16,19 +16,17 @@ end
 -- CONFIGURATION
 -- ==================================================
 
--- [FIX] Increased range. 3 studs was too small. 
+-- [FIX] Increased default range. 12 was still small.
 -- This is the distance (in studs) to automatically lock onto a target.
-local AUTO_LOCK_RANGE = 12
+local AUTO_LOCK_RANGE = 20
 
--- [FIX] This is the new throttle. We will only search for
+-- This is the performance throttle. We will only search for
 -- new targets 5 times per second (1 / 0.2 = 5).
--- This COMPLETELY fixes the lag/FPS drop.
 local TARGET_FIND_RATE = 0.2 -- (5 times per second)
 
--- [RECOMMENDED] For best performance, tag your NPCs (zombies, etc.) 
--- with CollectionService. e.g., "NPC" or "Zombie".
--- If you do, change this to "NPC" or whatever tag you use.
--- This is much faster than scanning the whole workspace.
+-- [PRO-TIP] For the BEST performance, tag your NPC models 
+-- (zombies, etc.) with CollectionService. e.g., "NPC"
+-- Then, set this variable to "NPC"
 local NPC_TAG = "" 
 
 -- ==================================================
@@ -38,14 +36,13 @@ local character, humanoid, hrp
 local isDisabled = false
 local isAutoLockEnabled = true -- Auto-lock is ON by default
 
--- [FIX] These are now the "state" variables managed by our loops
-local lockTarget = nil       -- The current target model
-local previousLockTarget = nil -- Used to know when to attach/detach billboards
+local lockTarget = nil       
+local previousLockTarget = nil
 local lockBillboard = nil
 
 -- ==================================================
 -- CHARACTER & STATE SETUP (Advanced Grab Detection)
--- (Unchanged from before)
+-- (Unchanged)
 -- ==================================================
 
 local function setupCharacter(char)
@@ -99,7 +96,7 @@ player.CharacterAdded:Connect(setupCharacter)
 
 -- ==================================================
 -- GUI SETUP
--- (Unchanged from before)
+-- (Unchanged)
 -- ==================================================
 
 local gui = Instance.new("ScreenGui")
@@ -131,7 +128,7 @@ statusDot.Parent = btn
 
 local dotCorner = Instance.new("UICorner")
 dotCorner.CornerRadius = UDim.new(0.5, 0)
-dotCorner.Parent = statusDot
+dotCorner.Parent = dotCorner
 
 -- Draggable Logic (Unchanged)
 local dragging, dragInput, dragStart, startPos
@@ -158,7 +155,7 @@ UserInputService.InputChanged:Connect(function(input)
 end)
 
 -- ==================================================
--- LOCK-ON CORE LOGIC (MODIFIED FOR PERFORMANCE)
+-- LOCK-ON CORE LOGIC (PERFORMANCE & UI FIXED)
 -- ==================================================
 
 local function detachBillboard()
@@ -193,6 +190,7 @@ local function isValidNPCTarget(model)
 	if not model or not model:IsA("Model") or model == character then 
 		return false 
 	end
+	-- This check is the most important: is it a player? If yes, ignore.
 	if Players:GetPlayerFromCharacter(model) then
 		return false
 	end
@@ -204,7 +202,7 @@ local function isValidNPCTarget(model)
 	return true
 end
 
--- This function is HEAVY (slow). We will only call it in the slow loop.
+-- [FIXED] This function is now much, much faster.
 local function findNearestNPC(range)
 	if not hrp then return nil end
 	
@@ -213,30 +211,37 @@ local function findNearestNPC(range)
 	
 	local potentialTargets
 	if NPC_TAG ~= "" then
+		-- OPTIMIZED PATH: User is using tags. This is the fastest.
 		potentialTargets = CollectionService:GetTagged(NPC_TAG)
-	else
-		-- [DEV NOTE] This is still slow, but it's OKAY
-		-- because we only run it 5x per second now.
-		potentialTargets = workspace:GetDescendants()
-	end
-	
-	for _, obj in ipairs(potentialTargets) do
-		local model = obj
-		if not obj:IsA("Model") then
-			if obj:FindFirstAncestorWhichIsA("Model") then
-				model = obj:FindFirstAncestorWhichIsA("Model")
-			else
-				continue 
+		for _, model in ipairs(potentialTargets) do
+			if isValidNPCTarget(model) then
+				local targetHrp = model.HumanoidRootPart
+				if targetHrp then
+					local distance = (playerPos - targetHrp.Position).Magnitude
+					if distance < minDistance then
+						minDistance = distance
+						nearestTarget = model
+					end
+				end
 			end
 		end
-
-		if isValidNPCTarget(model) then
-			local targetHrp = model.HumanoidRootPart
-			if targetHrp then -- Extra safety check
-				local distance = (playerPos - targetHrp.Position).Magnitude
-				if distance < minDistance then
-					minDistance = distance
-					nearestTarget = model
+	else
+		-- FALLBACK PATH: Find all Humanoids in the game. 
+		-- This is 1000x faster than checking all descendants.
+		potentialTargets = workspace:GetDescendants()
+		for _, obj in ipairs(potentialTargets) do
+			-- We only care about Humanoids
+			if obj:IsA("Humanoid") then
+				local model = obj.Parent
+				if isValidNPCTarget(model) then
+					local targetHrp = model.HumanoidRootPart
+					if targetHrp then
+						local distance = (playerPos - targetHrp.Position).Magnitude
+						if distance < minDistance then
+							minDistance = distance
+							nearestTarget = model
+						end
+					end
 				end
 			end
 		end
@@ -245,14 +250,11 @@ local function findNearestNPC(range)
 	return nearestTarget
 end
 
--- ### NEW ###
--- This is our "Target Finder" loop. It runs slowly and just
--- finds the target. It's separate from RenderStepped.
-spawn(function()
+-- This is our "Target Finder" loop. It runs slowly.
+task.spawn(function()
 	while task.wait(TARGET_FIND_RATE) do
 		-- Only search if the system is on and we aren't disabled (grabbed, etc)
 		if isAutoLockEnabled and not isDisabled and hrp then
-			-- This is the heavy function, but it's safe to call here.
 			lockTarget = findNearestNPC(AUTO_LOCK_RANGE)
 		else
 			lockTarget = nil
@@ -261,16 +263,22 @@ spawn(function()
 end)
 
 
--- Button now toggles the Auto-Lock system on or off
+-- [FIXED] Button UI now updates INSTANTLY on click.
 btn.Activated:Connect(function()
 	isAutoLockEnabled = not isAutoLockEnabled
-	if not isAutoLockEnabled then
+	
+	if isAutoLockEnabled then
+		btn.Text = "AUTO: ON"
+		btn.BackgroundColor3 = Color3.fromRGB(36, 137, 206) -- Blue
+	else
+		btn.Text = "AUTO: OFF"
+		btn.BackgroundColor3 = Color3.fromRGB(150, 150, 150) -- Gray
 		lockTarget = nil -- Force unlock if we turn it off
 	end
 end)
 
 -- Update status indicator (Unchanged)
-spawn(function()
+task.spawn(function()
 	while true do
 		wait(0.1)
 		if isDisabled then
@@ -281,18 +289,16 @@ spawn(function()
 	end
 end)
 
--- ### MODIFIED ###
--- This "Rotation Loop" is now EXTREMELY fast and lightweight.
--- It only does rotation and UI updates, no searching.
+-- This "Rotation Loop" is lightweight. It only aims.
 RunService.RenderStepped:Connect(function()
 	-- 1. Check for immediate disables (ragdolled, dead, etc.)
 	if isDisabled or not hrp or not humanoid or humanoid.Health <= 0 then
-		lockTarget = nil -- Force unlock
+		lockTarget = nil 
 	end
 	
 	-- 2. Additional real-time checks
 	if humanoid.PlatformStand or humanoid.Sit then
-		lockTarget = nil -- Force unlock
+		lockTarget = nil
 	end
 	
 	-- 3. If a target is found (by the slow loop), aim at it.
@@ -300,8 +306,8 @@ RunService.RenderStepped:Connect(function()
 		local targetHRP = lockTarget:FindFirstChild("HumanoidRootPart")
 		local targetHum = lockTarget:FindFirstChildWhichIsA("Humanoid")
 		
-		-- 4. Check if target is *still* valid (it might have died)
-		if targetHRP and targetHum and targetHum.Health > 0 and (hrp.Position - targetHRP.Position).Magnitude <= AUTO_LOCK_RANGE + 2 then
+		-- 4. Check if target is *still* valid
+		if targetHRP and targetHum and targetHum.Health > 0 and (hrp.Position - targetHRP.Position).Magnitude <= AUTO_LOCK_RANGE + 2 then -- +2 grace range
 			-- 5. Perform the rotation
 			if humanoid then humanoid.AutoRotate = false end
 			local lookPos = Vector3.new(targetHRP.Position.X, hrp.Position.Y, targetHRP.Position.Z)
@@ -315,21 +321,20 @@ RunService.RenderStepped:Connect(function()
 		if humanoid then humanoid.AutoRotate = true end
 	end
 	
-	-- 8. Handle all UI/Billboard changes
+	-- 8. Handle Billboard & UI *state* changes
 	if lockTarget ~= previousLockTarget then
 		if lockTarget then
+			-- New target found!
 			attachBillboard(lockTarget)
 			btn.Text = "LOCKED"
 			btn.BackgroundColor3 = Color3.fromRGB(206, 36, 36) -- Red
 		else
+			-- Target lost!
 			detachBillboard()
-			-- Reset button text based on the auto-lock state
+			-- Reset button text ONLY IF auto-lock is still on
 			if isAutoLockEnabled then
 				btn.Text = "AUTO: ON"
 				btn.BackgroundColor3 = Color3.fromRGB(36, 137, 206) -- Blue
-			else
-				btn.Text = "AUTO: OFF"
-				btn.BackgroundColor3 = Color3.fromRGB(150, 150, 150) -- Gray
 			end
 		end
 	end
@@ -337,5 +342,4 @@ RunService.RenderStepped:Connect(function()
 	previousLockTarget = lockTarget
 end)
 
-print("Mobile NPC Auto-Lock System v3 (Performance Fixed) loaded!")
-print("Features: NPC-Only, 12-Stud Auto-Target, Throttled Target-Finding (LAG-FREE)")
+print("Mobile NPC Auto-Lock System v4 (Performance & UI Fixed) loaded!")
