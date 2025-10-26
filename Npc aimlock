@@ -1,5 +1,5 @@
 -- LocalScript (StarterPlayerScripts)
--- v4 (Gemini Improved) - NPC-Only Auto-Lock (LAG & UI BUGS FIXED)
+-- v7 (Gemini Fixed) - Auto NPC-Only Lock-On (3-10 Stud Range)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -8,43 +8,38 @@ local CollectionService = game:GetService("CollectionService")
 
 -- Only run on mobile
 if not UserInputService.TouchEnabled then
-	print("Not on mobile, Auto-Lock script disabled.")
 	return
 end
 
 -- ==================================================
 -- CONFIGURATION
 -- ==================================================
+-- [NEW] Your requested 3-10 stud "sweet spot" for locking on.
+local MIN_LOCK_RANGE = 3 
+local MAX_LOCK_RANGE = 10
 
--- [FIX] Increased default range. 12 was still small.
--- This is the distance (in studs) to automatically lock onto a target.
-local AUTO_LOCK_RANGE = 20
+-- How often to search for new targets (in seconds)
+-- This prevents lag. 5 times per second is good.
+local TARGET_FIND_RATE = 0.2
 
--- This is the performance throttle. We will only search for
--- new targets 5 times per second (1 / 0.2 = 5).
-local TARGET_FIND_RATE = 0.2 -- (5 times per second)
-
--- [PRO-TIP] For the BEST performance, tag your NPC models 
--- (zombies, etc.) with CollectionService. e.g., "NPC"
--- Then, set this variable to "NPC"
-local NPC_TAG = "" 
-
+-- [RECOMMENDATION] For best performance, tag your NPCs (zombies)
+-- with CollectionService using the tag "NPC".
+-- If you do that, change this to: local NPC_TAG = "NPC"
+local NPC_TAG = ""
 -- ==================================================
 
 local player = Players.LocalPlayer
 local character, humanoid, hrp
 local isDisabled = false
-local isAutoLockEnabled = true -- Auto-lock is ON by default
+local isAutoLockEnabled = true -- System is ON by default
 
-local lockTarget = nil       
-local previousLockTarget = nil
-local lockBillboard = nil
+local lockTarget, lockBillboard
+local previousLockTarget -- To track UI changes
 
 -- ==================================================
--- CHARACTER & STATE SETUP (Advanced Grab Detection)
+-- CHARACTER & STATE SETUP (Your original, good code)
 -- (Unchanged)
 -- ==================================================
-
 local function setupCharacter(char)
 	character = char
 	humanoid = char:WaitForChild("Humanoid")
@@ -52,6 +47,8 @@ local function setupCharacter(char)
 	
 	if humanoid then 
 		humanoid.AutoRotate = true 
+		
+		-- Detect ragdoll/grab through state changes
 		humanoid.StateChanged:Connect(function(oldState, newState)
 			if newState == Enum.HumanoidStateType.Physics or 
 			   newState == Enum.HumanoidStateType.Ragdoll or
@@ -64,24 +61,31 @@ local function setupCharacter(char)
 				isDisabled = false
 			end
 		end)
+		
+		-- Detect PlatformStand changes (common grab method)
 		humanoid:GetPropertyChangedSignal("PlatformStand"):Connect(function()
 			if humanoid.PlatformStand then isDisabled = true else isDisabled = false end
 		end)
+		
+		-- Detect Sit changes (some grabs use this)
 		humanoid:GetPropertyChangedSignal("Sit"):Connect(function()
 			if humanoid.Sit then isDisabled = true end
 		end)
 	end
 	
+	-- Monitor for welds/constraints added to HRP (grab detection)
 	if hrp then
 		hrp.ChildAdded:Connect(function(child)
-			if child:IsA("Wold") or child:IsA("WeldConstraint") or 
+			if child:IsA("Weld") or child:IsA("WeldConstraint") or 
 			   child:IsA("AlignPosition") or child:IsA("AlignOrientation") or
 			   child:IsA("RopeConstraint") then
 				isDisabled = true
+				
+				-- Re-enable when constraint is removed
 				local connection
 				connection = child.AncestryChanged:Connect(function()
 					if not child:IsDescendantOf(game) then
-						task.wait(0.5) 
+						task.wait(0.5) -- Small delay to ensure grab ended
 						isDisabled = false
 						if connection then connection:Disconnect() end
 					end
@@ -95,10 +99,8 @@ if player.Character then setupCharacter(player.Character) end
 player.CharacterAdded:Connect(setupCharacter)
 
 -- ==================================================
--- GUI SETUP
--- (Unchanged)
+-- GUI (CRITICAL TYPO FIXED IN v6)
 -- ==================================================
-
 local gui = Instance.new("ScreenGui")
 gui.Name = "LockOnUI"
 gui.ResetOnSpawn = false
@@ -107,8 +109,8 @@ gui.Parent = player:WaitForChild("PlayerGui")
 local btn = Instance.new("TextButton")
 btn.Size = UDim2.new(0, 110, 0, 50)
 btn.Position = UDim2.new(0.06, 0, 0.8, 0)
-btn.Text = "AUTO: ON"
-btn.BackgroundColor3 = Color3.fromRGB(36, 137, 206) -- Blue
+btn.Text = "AUTO: ON" -- Changed default text
+btn.BackgroundColor3 = Color3.fromRGB(36, 137, 206)
 btn.TextColor3 = Color3.new(1, 1, 1)
 btn.Font = Enum.Font.GothamBold
 btn.TextSize = 20
@@ -119,18 +121,20 @@ local corner = Instance.new("UICorner")
 corner.CornerRadius = UDim.new(0, 8)
 corner.Parent = btn
 
+-- Status indicator (small)
 local statusDot = Instance.new("Frame")
 statusDot.Size = UDim2.new(0, 8, 0, 8)
 statusDot.Position = UDim2.new(1, -12, 0, 4)
-statusDot.BackgroundColor3 = Color3.fromRGB(100, 255, 100) -- Green
+statusDot.BackgroundColor3 = Color3.fromRGB(100, 255, 100)
 statusDot.BorderSizePixel = 0
 statusDot.Parent = btn
 
 local dotCorner = Instance.new("UICorner")
 dotCorner.CornerRadius = UDim.new(0.5, 0)
-dotCorner.Parent = dotCorner
+-- This was the script-killing bug, fixed in v6
+dotCorner.Parent = statusDot 
 
--- Draggable Logic (Unchanged)
+-- Draggable (Your original, working code)
 local dragging, dragInput, dragStart, startPos
 local function updateDrag(input)
 	local delta = input.Position - dragStart
@@ -155,9 +159,10 @@ UserInputService.InputChanged:Connect(function(input)
 end)
 
 -- ==================================================
--- LOCK-ON CORE LOGIC (PERFORMANCE & UI FIXED)
+-- NEW LOCK-ON LOGIC (3-10 Studs)
 -- ==================================================
 
+-- Billboard functions (Your original code)
 local function detachBillboard()
 	if lockBillboard then
 		lockBillboard:Destroy()
@@ -185,12 +190,12 @@ local function attachBillboard(model)
 	lockBillboard = bb
 end
 
--- Checks if a model is a valid NPC target
+-- [MODIFIED] This now ONLY checks for NPCs
 local function isValidNPCTarget(model)
 	if not model or not model:IsA("Model") or model == character then 
 		return false 
 	end
-	-- This check is the most important: is it a player? If yes, ignore.
+	-- This is the critical NPC-only check
 	if Players:GetPlayerFromCharacter(model) then
 		return false
 	end
@@ -202,44 +207,53 @@ local function isValidNPCTarget(model)
 	return true
 end
 
--- [FIXED] This function is now much, much faster.
-local function findNearestNPC(range)
+-- [MODIFIED] This finds the nearest NPC within the 3-10 stud range
+local function findNearestNPC()
 	if not hrp then return nil end
 	
-	local nearestTarget, minDistance = nil, range
+	-- We initialize minDistance to the MAX range
+	local nearestTarget, minDistance = nil, MAX_LOCK_RANGE
 	local playerPos = hrp.Position
 	
 	local potentialTargets
 	if NPC_TAG ~= "" then
-		-- OPTIMIZED PATH: User is using tags. This is the fastest.
+		-- OPTIMIZED PATH: User is using CollectionService tags.
 		potentialTargets = CollectionService:GetTagged(NPC_TAG)
 		for _, model in ipairs(potentialTargets) do
 			if isValidNPCTarget(model) then
 				local targetHrp = model.HumanoidRootPart
 				if targetHrp then
 					local distance = (playerPos - targetHrp.Position).Magnitude
-					if distance < minDistance then
-						minDistance = distance
-						nearestTarget = model
+					
+					-- [NEW LOGIC] Check if it's in the 3-10 stud "sweet spot"
+					if distance >= MIN_LOCK_RANGE and distance <= MAX_LOCK_RANGE then
+						-- If it is, check if it's the closest one *so far*
+						if distance < minDistance then
+							minDistance = distance
+							nearestTarget = model
+						end
 					end
 				end
 			end
 		end
 	else
-		-- FALLBACK PATH: Find all Humanoids in the game. 
-		-- This is 1000x faster than checking all descendants.
+		-- FALLBACK PATH: Find all Humanoids.
 		potentialTargets = workspace:GetDescendants()
 		for _, obj in ipairs(potentialTargets) do
-			-- We only care about Humanoids
 			if obj:IsA("Humanoid") then
 				local model = obj.Parent
 				if isValidNPCTarget(model) then
 					local targetHrp = model.HumanoidRootPart
 					if targetHrp then
 						local distance = (playerPos - targetHrp.Position).Magnitude
-						if distance < minDistance then
-							minDistance = distance
-							nearestTarget = model
+						
+						-- [NEW LOGLOGIC] Check if it's in the 3-10 stud "sweet spot"
+						if distance >= MIN_LOCK_RANGE and distance <= MAX_LOCK_RANGE then
+							-- If it is, check if it's the closest one *so far*
+							if distance < minDistance then
+								minDistance = distance
+								nearestTarget = model
+							end
 						end
 					end
 				end
@@ -250,20 +264,7 @@ local function findNearestNPC(range)
 	return nearestTarget
 end
 
--- This is our "Target Finder" loop. It runs slowly.
-task.spawn(function()
-	while task.wait(TARGET_FIND_RATE) do
-		-- Only search if the system is on and we aren't disabled (grabbed, etc)
-		if isAutoLockEnabled and not isDisabled and hrp then
-			lockTarget = findNearestNPC(AUTO_LOCK_RANGE)
-		else
-			lockTarget = nil
-		end
-	end
-end)
-
-
--- [FIXED] Button UI now updates INSTANTLY on click.
+-- [MODIFIED] Button is now a simple On/Off toggle
 btn.Activated:Connect(function()
 	isAutoLockEnabled = not isAutoLockEnabled
 	
@@ -273,11 +274,11 @@ btn.Activated:Connect(function()
 	else
 		btn.Text = "AUTO: OFF"
 		btn.BackgroundColor3 = Color3.fromRGB(150, 150, 150) -- Gray
-		lockTarget = nil -- Force unlock if we turn it off
+		lockTarget = nil -- Force unlock when turning off
 	end
 end)
 
--- Update status indicator (Unchanged)
+-- Update status indicator (Your original code)
 task.spawn(function()
 	while true do
 		wait(0.1)
@@ -289,39 +290,58 @@ task.spawn(function()
 	end
 end)
 
--- This "Rotation Loop" is lightweight. It only aims.
+-- [NEW] Target-finding loop. Runs slowly to prevent lag.
+task.spawn(function()
+	while task.wait(TARGET_FIND_RATE) do
+		-- Only search if the system is on and we aren't disabled
+		if isAutoLockEnabled and not isDisabled and hrp then
+			lockTarget = findNearestNPC()
+		else
+			lockTarget = nil
+		end
+	end
+end)
+
+
+-- [MODIFIED] Rotation loop.
 RunService.RenderStepped:Connect(function()
-	-- 1. Check for immediate disables (ragdolled, dead, etc.)
+	-- 1. Check for immediate disables
 	if isDisabled or not hrp or not humanoid or humanoid.Health <= 0 then
 		lockTarget = nil 
 	end
-	
-	-- 2. Additional real-time checks
 	if humanoid.PlatformStand or humanoid.Sit then
 		lockTarget = nil
 	end
 	
-	-- 3. If a target is found (by the slow loop), aim at it.
+	-- 2. If a target is found (by the slow loop), aim at it.
 	if lockTarget then
 		local targetHRP = lockTarget:FindFirstChild("HumanoidRootPart")
 		local targetHum = lockTarget:FindFirstChildWhichIsA("Humanoid")
 		
-		-- 4. Check if target is *still* valid
-		if targetHRP and targetHum and targetHum.Health > 0 and (hrp.Position - targetHRP.Position).Magnitude <= AUTO_LOCK_RANGE + 2 then -- +2 grace range
-			-- 5. Perform the rotation
+		-- 3. Check if target is *still* valid
+		-- [MODIFIED] We check if it's still in range, with a 1-stud "grace"
+		-- so it doesn't flicker off (e.g., it will stay locked from 2 to 11 studs)
+		local graceMin = MIN_LOCK_RANGE - 1
+		local graceMax = MAX_LOCK_RANGE + 1
+		local distance = (hrp.Position - targetHRP.Position).Magnitude
+		
+		if targetHRP and targetHum and targetHum.Health > 0 and distance >= graceMin and distance <= graceMax then
+			-- 4. Perform the rotation
 			if humanoid then humanoid.AutoRotate = false end
+			
+			-- [FIXED] This was the script-killing typo from v5
 			local lookPos = Vector3.new(targetHRP.Position.X, hrp.Position.Y, targetHRP.Position.Z)
 			hrp.CFrame = CFrame.new(hrp.Position, lookPos)
 		else
-			-- 6. Target died or went out of range
+			-- 5. Target died or went out of range
 			lockTarget = nil
 		end
 	else
-		-- 7. No target, so ensure autorotate is on
+		-- 6. No target, so ensure autorotate is on
 		if humanoid then humanoid.AutoRotate = true end
 	end
 	
-	-- 8. Handle Billboard & UI *state* changes
+	-- 7. Handle Billboard & UI *state* changes
 	if lockTarget ~= previousLockTarget then
 		if lockTarget then
 			-- New target found!
@@ -342,4 +362,4 @@ RunService.RenderStepped:Connect(function()
 	previousLockTarget = lockTarget
 end)
 
-print("Mobile NPC Auto-Lock System v4 (Performance & UI Fixed) loaded!")
+print("Mobile NPC Auto-Lock System v7 (3-10 Stud Range) loaded!")
