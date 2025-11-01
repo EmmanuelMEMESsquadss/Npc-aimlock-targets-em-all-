@@ -1,5 +1,5 @@
 -- LocalScript (StarterPlayerScripts)
--- Mobile Lock-On with Frame-Accurate Grab/Ragdoll Detection (v3)
+-- Mobile Lock-On with Frame-Accurate Grab/Ragdoll Detection (v5)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -15,7 +15,7 @@ end
 local player = Players.LocalPlayer
 local character, humanoid, hrp
 
--- GUI (No changes here)
+-- GUI (No changes)
 local gui = Instance.new("ScreenGui")
 gui.Name = "LockOnUI"
 gui.ResetOnSpawn = false
@@ -47,7 +47,7 @@ local dotCorner = Instance.new("UICorner")
 dotCorner.CornerRadius = UDim.new(0.5, 0)
 dotCorner.Parent = dotCorner
 
--- Draggable (No changes here)
+-- Draggable (No changes)
 local dragging, dragInput, dragStart, startPos
 local function updateDrag(input)
 	local delta = input.Position - dragStart
@@ -156,7 +156,7 @@ end
 local function isCharacterControllable()
 	if not humanoid then return false end
 	
-	-- Check for physical states
+	-- 1. Check for physical states
 	local state = humanoid:GetState()
 	if state == Enum.HumanoidStateType.Physics or
 	   state == Enum.HumanoidStateType.Ragdoll or
@@ -164,21 +164,32 @@ local function isCharacterControllable()
 		return false
 	end
 	
-	-- Check for property-based states
+	-- 2. Check for property-based states
 	if humanoid.PlatformStand or humanoid.Sit then
 		return false
 	end
 	
-	-- Check for grab welds (This is the only check we need to keep)
+	-- 3. Check for external grab constraints
 	if hrp then
-		-- A fast check for common grab constraints
-		if hrp:FindFirstChildWhichIsA("WeldConstraint") or 
-		   hrp:FindFirstChildWhichIsA("AlignPosition") or 
-		   hrp:FindFirstChildWhichIsA("RopeConstraint") then
-			return false
+        -- Loop through children of HRP
+		for _, child in ipairs(hrp:GetChildren()) do
+            -- Check for any Weld or Constraint
+			if child:IsA("Weld") or child:IsA("Constraint") then
+                -- Make sure it's not part of a tool (like a handle weld)
+                local isToolWeld = false
+                if child.Name == "RightGrip" or child.Name == "LeftGrip" then
+                    isToolWeld = true
+                end
+                
+				if not isToolWeld then
+                    -- This is a non-tool constraint. Assume it's a grab.
+				    return false
+                end
+			end
 		end
 	end
 	
+	-- If none of the above, we are controllable
 	return true
 end
 
@@ -200,9 +211,6 @@ btn.Activated:Connect(function()
 		local t = getNearestTarget()
 		if t then
 			lockTarget = t
-			if humanoid then 
-				humanoid.AutoRotate = false -- Take control
-			end
 			attachBillboard(t)
 			btn.Text = "UNLOCK"
 			btn.BackgroundColor3 = Color3.fromRGB(206, 36, 36)
@@ -231,9 +239,8 @@ task.spawn(function()
 end)
 
 -- === (THE FIX) Re-engineered Rotation loop ===
-local wasControllable = true -- Keep track of the previous state
-
 RunService.RenderStepped:Connect(function()
+	-- Only run if we have a target
 	if not lockTarget or not hrp or not humanoid or humanoid.Health <= 0 then
 		return 
 	end
@@ -242,43 +249,35 @@ RunService.RenderStepped:Connect(function()
 	local targetHRP = lockTarget:FindFirstChild("HumanoidRootPart")
 	local targetHum = lockTarget:FindFirstChildWhichIsA("Humanoid")
 	if not (targetHRP and targetHum and targetHum.Health > 0) then
-		unlock()
+		unlock() -- Target is invalid, unlock and stop
 		return
 	end
 
 	-- 2. Check *our* state (frame-accurate)
-	local isControllable = isCharacterControllable()
-
-	if not isControllable then
+	if isCharacterControllable() then
+		-- We are good to go. Take control and aim.
+		if humanoid.AutoRotate == true then
+			humanoid.AutoRotate = false
+		end
+		
+		-- Apply CFrame lock
+		pcall(function()
+			local lookPos = Vector3.new(targetHRP.Position.X, hrp.Position.Y, targetHRP.Position.Z)
+			hrp.CFrame = CFrame.new(hrp.Position, lookPos)
+		end)
+	else
 		-- We are grabbed/ragdolled.
 		-- Release camera control so it follows the ragdoll/grab physics.
 		if humanoid.AutoRotate == false then
 			humanoid.AutoRotate = true
 		end
-		wasControllable = false -- Flag that we were just disabled
-		return -- Do NOT apply our own rotation
+		-- Do NOT apply CFrame lock
 	end
-	
-	-- 3. We are controllable.
-	-- Check if we *just* came out of a disabled state
-	if not wasControllable then
-		if humanoid.AutoRotate == true then
-			humanoid.AutoRotate = false -- Re-take control of camera
-		end
-		wasControllable = true
-	end
-
-	-- 4. We are not disabled, and we have a valid target.
-	-- Apply the lock-on rotation.
-	pcall(function()
-		local lookPos = Vector3.new(targetHRP.Position.X, hrp.Position.Y, targetHRP.Position.Z)
-		hrp.CFrame = CFrame.new(hrp.Position, lookPos)
-	end)
 end)
 
 -- Initial setup
 if player.Character then setupCharacter(player.Character) end
 player.CharacterAdded:Connect(setupCharacter)
 
-print("Mobile Lock System v3 loaded!")
-print("FIX: Using frame-accurate state checking.")
+print("Mobile Lock System v5 loaded!")
+print("FIX: Robust constraint and state checking.")
