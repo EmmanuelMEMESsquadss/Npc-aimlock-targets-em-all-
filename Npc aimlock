@@ -1,5 +1,5 @@
 -- LocalScript (StarterPlayerScripts)
--- Mobile Lock-On with Frame-Accurate Grab/Ragdoll Detection (v5)
+-- Mobile Lock-On with Frame-Accurate Grab/Ragdoll/Scene Detection (v6)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -152,39 +152,47 @@ local function unlock()
 	btn.BackgroundColor3 = Color3.fromRGB(36, 137, 206)
 end
 
--- === (THE FIX) New function to check character state ===
+-- === (THE FIX) v6 - Scene-Aware Check ===
 local function isCharacterControllable()
 	if not humanoid then return false end
+
+	-- 1. Check Camera (NEW)
+	-- If the camera is "Scriptable", a cutscene is playing. Release control.
+	if workspace.CurrentCamera.CameraType == Enum.CameraType.Scriptable then
+		return false 
+	end
 	
-	-- 1. Check for physical states
+	-- If the camera isn't even looking at our character, release control.
+	if workspace.CurrentCamera.CameraSubject ~= humanoid then
+		return false
+	end
+
+	-- 2. Check for physical states (Added Stunned/GettingUp)
 	local state = humanoid:GetState()
 	if state == Enum.HumanoidStateType.Physics or
 	   state == Enum.HumanoidStateType.Ragdoll or
-	   state == Enum.HumanoidStateType.FallingDown then
+	   state == Enum.HumanoidStateType.FallingDown or
+	   state == Enum.HumanoidStateType.Stunned or
+	   state == Enum.HumanoidStateType.GettingUp then
 		return false
 	end
 	
-	-- 2. Check for property-based states
+	-- 3. Check for property-based states
 	if humanoid.PlatformStand or humanoid.Sit then
 		return false
 	end
 	
-	-- 3. Check for external grab constraints
+	-- 4. Check for external grab constraints
 	if hrp then
-        -- Loop through children of HRP
 		for _, child in ipairs(hrp:GetChildren()) do
-            -- Check for any Weld or Constraint
 			if child:IsA("Weld") or child:IsA("Constraint") then
-                -- Make sure it's not part of a tool (like a handle weld)
-                local isToolWeld = false
-                if child.Name == "RightGrip" or child.Name == "LeftGrip" then
-                    isToolWeld = true
-                end
-                
+				local isToolWeld = false
+				if child.Name == "RightGrip" or child.Name == "LeftGrip" then
+					isToolWeld = true
+				end
 				if not isToolWeld then
-                    -- This is a non-tool constraint. Assume it's a grab.
-				    return false
-                end
+					return false
+				end
 			end
 		end
 	end
@@ -238,9 +246,8 @@ task.spawn(function()
 	end
 end)
 
--- === (THE FIX) Re-engineered Rotation loop ===
+-- === (THE FIX) Main Loop ===
 RunService.RenderStepped:Connect(function()
-	-- Only run if we have a target
 	if not lockTarget or not hrp or not humanoid or humanoid.Health <= 0 then
 		return 
 	end
@@ -249,7 +256,7 @@ RunService.RenderStepped:Connect(function()
 	local targetHRP = lockTarget:FindFirstChild("HumanoidRootPart")
 	local targetHum = lockTarget:FindFirstChildWhichIsA("Humanoid")
 	if not (targetHRP and targetHum and targetHum.Health > 0) then
-		unlock() -- Target is invalid, unlock and stop
+		unlock()
 		return
 	end
 
@@ -266,12 +273,11 @@ RunService.RenderStepped:Connect(function()
 			hrp.CFrame = CFrame.new(hrp.Position, lookPos)
 		end)
 	else
-		-- We are grabbed/ragdolled.
-		-- Release camera control so it follows the ragdoll/grab physics.
+		-- We are grabbed/ragdolled/in a cutscene.
+		-- Release camera control so it follows the game's script.
 		if humanoid.AutoRotate == false then
 			humanoid.AutoRotate = true
 		end
-		-- Do NOT apply CFrame lock
 	end
 end)
 
@@ -279,5 +285,5 @@ end)
 if player.Character then setupCharacter(player.Character) end
 player.CharacterAdded:Connect(setupCharacter)
 
-print("Mobile Lock System v5 loaded!")
-print("FIX: Robust constraint and state checking.")
+print("Mobile Lock System v6 loaded!")
+print("FIX: Now detects camera changes (cutscenes) and Stunned/GettingUp states.")
