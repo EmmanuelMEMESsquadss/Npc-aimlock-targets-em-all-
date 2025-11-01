@@ -1,5 +1,5 @@
 -- LocalScript (StarterPlayerScripts)
--- Mobile Lock-On with Frame-Accurate Grab/Ragdoll/Scene Detection (v6)
+-- Mobile Lock-On with Frame-Accurate Grab/Ragdoll/Scene Detection (v7)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -14,6 +14,7 @@ end
 
 local player = Players.LocalPlayer
 local character, humanoid, hrp
+local camera = workspace.CurrentCamera
 
 -- GUI (No changes)
 local gui = Instance.new("ScreenGui")
@@ -74,6 +75,7 @@ end)
 -- Lock state
 local MAX_DIST = 100
 local lockTarget, lockBillboard
+local normalFOV = camera.FieldOfView -- Store the default FOV
 
 local function detachBillboard()
 	if lockBillboard then
@@ -111,11 +113,14 @@ local function isValidTarget(model)
 	return true
 end
 
+-- === (THE FIX) v7 - Optimized Target Finding ===
 local function getNearestTarget()
 	if not hrp then return end
 	local nearest, dist = nil, MAX_DIST
 	local playerCharacters = {}
+	local checkedModels = {}
 	
+	-- 1. Check all players (fast)
 	for _, pl in ipairs(Players:GetPlayers()) do
 		if pl ~= player and pl.Character and isValidTarget(pl.Character) then
 			local d = (hrp.Position - pl.Character.HumanoidRootPart.Position).Magnitude
@@ -123,22 +128,32 @@ local function getNearestTarget()
 				dist = d
 				nearest = pl.Character
 			end
-			playerCharacters[pl.Character] = true
+			playerCharacters[pl.Character] = true -- Add to ignore list
 		end
 	end
 	
-	for _, obj in ipairs(workspace:GetDescendants()) do
-		if obj:IsA("Model") and not playerCharacters[obj] and isValidTarget(obj) then
-			local targetHrp = obj:FindFirstChild("HumanoidRootPart")
+	-- 2. Check for NPCs using a spatial query (much faster)
+	local overlapParams = OverlapParams.new()
+	overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+	overlapParams.FilterDescendantsInstances = {character}
+	
+	local partsInRadius = workspace:GetPartsInRadius(hrp.Position, MAX_DIST, overlapParams)
+	
+	for _, part in ipairs(partsInRadius) do
+		local model = part:FindFirstAncestorOfClass("Model")
+		if model and not checkedModels[model] and not playerCharacters[model] and isValidTarget(model) then
+			local targetHrp = model:FindFirstChild("HumanoidRootPart")
 			if targetHrp then
 				local d = (hrp.Position - targetHrp.Position).Magnitude
 				if d < dist then
 					dist = d
-					nearest = obj
+					nearest = model
 				end
 			end
+			checkedModels[model] = true -- Don't check this model again
 		end
 	end
+	
 	return nearest
 end
 
@@ -152,22 +167,29 @@ local function unlock()
 	btn.BackgroundColor3 = Color3.fromRGB(36, 137, 206)
 end
 
--- === (THE FIX) v6 - Scene-Aware Check ===
+-- === (THE FIX) v7 - Scene-Aware Check ===
 local function isCharacterControllable()
-	if not humanoid then return false end
+	if not humanoid or not hrp then return false end
 
-	-- 1. Check Camera (NEW)
-	-- If the camera is "Scriptable", a cutscene is playing. Release control.
-	if workspace.CurrentCamera.CameraType == Enum.CameraType.Scriptable then
-		return false 
+	-- 1. Check Camera (NEW Scene Detection)
+	if camera.CameraType == Enum.CameraType.Scriptable then
+		return false -- Obvious cutscene
+	end
+	if camera.CameraSubject ~= humanoid then
+		return false -- Camera is locked onto something else
 	end
 	
-	-- If the camera isn't even looking at our character, release control.
-	if workspace.CurrentCamera.CameraSubject ~= humanoid then
+	-- If camera focus is pulled far away from our HRP, it's a scene
+	if (camera.Focus.Position - hrp.Position).Magnitude > 10 then
+		return false
+	end
+	
+	-- If FOV changes dramatically (like a zoom-in), it's a scene
+	if math.abs(camera.FieldOfView - normalFOV) > 15 then
 		return false
 	end
 
-	-- 2. Check for physical states (Added Stunned/GettingUp)
+	-- 2. Check for physical states
 	local state = humanoid:GetState()
 	if state == Enum.HumanoidStateType.Physics or
 	   state == Enum.HumanoidStateType.Ragdoll or
@@ -183,16 +205,11 @@ local function isCharacterControllable()
 	end
 	
 	-- 4. Check for external grab constraints
-	if hrp then
-		for _, child in ipairs(hrp:GetChildren()) do
-			if child:IsA("Weld") or child:IsA("Constraint") then
-				local isToolWeld = false
-				if child.Name == "RightGrip" or child.Name == "LeftGrip" then
-					isToolWeld = true
-				end
-				if not isToolWeld then
-					return false
-				end
+	for _, child in ipairs(hrp:GetChildren()) do
+		if child:IsA("Weld") or child:IsA("Constraint") then
+			-- Ignore tool grip welds
+			if child.Name ~= "RightGrip" and child.Name ~= "LeftGrip" then
+				return false -- This is a grab!
 			end
 		end
 	end
@@ -209,6 +226,8 @@ local function setupCharacter(char)
 	if humanoid then
 		humanoid.AutoRotate = true
 	end
+	-- Store the player's normal FOV
+	normalFOV = camera.FieldOfView
 end
 
 -- Button Logic
@@ -237,7 +256,6 @@ end)
 task.spawn(function()
 	while true do
 		task.wait(0.1)
-		-- Update dot based on the *real-time* check
 		if isCharacterControllable() then
 			statusDot.BackgroundColor3 = Color3.fromRGB(100, 255, 100) -- Green
 		else
@@ -285,5 +303,5 @@ end)
 if player.Character then setupCharacter(player.Character) end
 player.CharacterAdded:Connect(setupCharacter)
 
-print("Mobile Lock System v6 loaded!")
-print("FIX: Now detects camera changes (cutscenes) and Stunned/GettingUp states.")
+print("Mobile Lock System v7 loaded!")
+print("FIX: Now detects camera Focus, FOV changes, and has faster target scanning.")
